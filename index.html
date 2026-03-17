@@ -85,6 +85,18 @@
     .date-converted { color: var(--text-secondary); }
     .next-day { font-size: 7px; color: var(--accent); letter-spacing: 0.1em; margin-left: 4px; vertical-align: middle; }
 
+    /* FX mode */
+    .fx-row { display: none; margin-top: 4px; }
+    .fx-mode .fx-row { display: block; }
+    .fx-pair { font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 2px; }
+    .fx-rate { font-family: 'Roboto Mono', monospace; font-weight: 400; font-size: 1.05rem; color: var(--text-primary); letter-spacing: -0.02em; line-height: 1.2; }
+    .fx-change { font-family: 'Roboto Mono', monospace; font-size: 9px; letter-spacing: 0.04em; margin-top: 2px; }
+    .fx-change.up { color: #4caf50; }
+    .fx-change.down { color: #e07070; }
+    .fx-change.flat { color: var(--text-secondary); }
+    .fx-loading { font-size: 8px; color: var(--text-dim); letter-spacing: 0.1em; text-transform: uppercase; }
+    .fx-base-note { font-size: 8px; color: var(--text-secondary); letter-spacing: 0.1em; }
+
     /* Converter banner */
     .converter-banner {
       display: none; margin-bottom: 8px; padding: 8px 12px;
@@ -147,6 +159,12 @@
       <div class="header-line"></div>
     </div>
     <div class="header-btns">
+      <button class="btn-icon" id="btnFx" title="Currency exchange rates">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 4h8M4 8h6M4 12h4M12 10v4M10 12h4"/>
+        </svg>
+        FX
+      </button>
       <button class="btn-icon" id="btnConverter" title="Time converter">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M2 8h12M10 4l4 4-4 4"/>
@@ -192,14 +210,14 @@
 
 <script>
   const ALL_ZONES = [
-    { city: "San Pedro",    country: "Belize",         tz: "America/Belize"     },
-    { city: "Miami",        country: "United States",  tz: "America/New_York"   },
-    { city: "Montevideo",   country: "Uruguay",        tz: "America/Montevideo" },
-    { city: "London",       country: "United Kingdom", tz: "Europe/London"      },
-    { city: "Oslo",         country: "Norway",         tz: "Europe/Oslo"        },
-    { city: "Tbilisi",      country: "Georgia",        tz: "Asia/Tbilisi"       },
-    { city: "Tashkent",     country: "Uzbekistan",     tz: "Asia/Tashkent"      },
-    { city: "Kuala Lumpur", country: "Malaysia",       tz: "Asia/Kuala_Lumpur"  },
+    { city: "San Pedro",    country: "Belize",         tz: "America/Belize",     ccy: "BZD" },
+    { city: "Miami",        country: "United States",  tz: "America/New_York",   ccy: "USD" },
+    { city: "Montevideo",   country: "Uruguay",        tz: "America/Montevideo", ccy: "UYU" },
+    { city: "London",       country: "United Kingdom", tz: "Europe/London",      ccy: "GBP" },
+    { city: "Oslo",         country: "Norway",         tz: "Europe/Oslo",        ccy: "NOK" },
+    { city: "Tbilisi",      country: "Georgia",        tz: "Asia/Tbilisi",       ccy: "GEL" },
+    { city: "Tashkent",     country: "Uzbekistan",     tz: "Asia/Tashkent",      ccy: "UZS" },
+    { city: "Kuala Lumpur", country: "Malaysia",       tz: "Asia/Kuala_Lumpur",  ccy: "MYR" },
   ];
 
   const STORAGE_KEY = 'worldclock_selected';
@@ -207,6 +225,8 @@
   let tickInterval = null;
   let converterMode = false;
   let convertingIndex = null; // which card is the source
+  let fxMode = false;
+  let fxData = {}; // { CCY: { rate: number, change30d: number } }
 
   // ── Storage ──
   function loadSelected() {
@@ -267,6 +287,11 @@
           <div class="input-hint">Enter time → see all zones</div>
         </div>
         <div class="date-display" id="date-${i}">---</div>
+        <div class="fx-row" id="fx-${i}">
+          ${z.ccy === 'GBP'
+            ? '<div class="fx-base-note">Base currency</div>'
+            : '<div class="fx-loading">Loading rates…</div>'}
+        </div>
       `;
 
       card.addEventListener('click', (e) => {
@@ -315,6 +340,7 @@
 
   // ── Converter mode ──
   function toggleConverter() {
+    if (fxMode) { fxMode = false; document.getElementById('btnFx').classList.remove('active'); document.getElementById('clockGrid').classList.remove('fx-mode'); }
     converterMode = !converterMode;
     document.getElementById('btnConverter').classList.toggle('active', converterMode);
     document.getElementById('clockGrid').classList.toggle('converter-mode', converterMode);
@@ -411,7 +437,70 @@
     updateClocks();
   }
 
+  // ── FX mode ──
+  async function fetchFxRates() {
+    const ccys = [...new Set(activeZones.map(z => z.ccy).filter(c => c !== 'GBP'))];
+    if (ccys.length === 0) return;
+    const symbols = ccys.join(',');
+
+    try {
+      // Fetch current rates
+      const latestRes = await fetch(`https://api.frankfurter.app/latest?from=GBP&to=${symbols}`);
+      const latestData = await latestRes.json();
+
+      // Fetch rates from 30 days ago
+      const d30 = new Date();
+      d30.setDate(d30.getDate() - 30);
+      const dateStr = d30.toISOString().slice(0, 10);
+      const histRes = await fetch(`https://api.frankfurter.app/${dateStr}?from=GBP&to=${symbols}`);
+      const histData = await histRes.json();
+
+      ccys.forEach(ccy => {
+        const now = latestData.rates[ccy];
+        const then = histData.rates[ccy];
+        if (now != null && then != null) {
+          fxData[ccy] = { rate: now, change30d: ((now - then) / then) * 100 };
+        }
+      });
+
+      renderFx();
+    } catch (e) {
+      console.warn('FX fetch failed:', e);
+      activeZones.forEach((z, i) => {
+        if (z.ccy === 'GBP') return;
+        const el = document.getElementById(`fx-${i}`);
+        if (el) el.innerHTML = '<div class="fx-loading">Rates unavailable</div>';
+      });
+    }
+  }
+
+  function renderFx() {
+    activeZones.forEach((z, i) => {
+      const el = document.getElementById(`fx-${i}`);
+      if (!el || z.ccy === 'GBP') return;
+      const d = fxData[z.ccy];
+      if (!d) return;
+      const sign = d.change30d > 0 ? '+' : '';
+      const cls = d.change30d > 0.01 ? 'up' : d.change30d < -0.01 ? 'down' : 'flat';
+      const arrow = d.change30d > 0.01 ? '▲' : d.change30d < -0.01 ? '▼' : '―';
+      el.innerHTML = `
+        <div class="fx-pair">${z.ccy} / GBP</div>
+        <div class="fx-rate">${d.rate.toFixed(d.rate >= 100 ? 1 : 4)}</div>
+        <div class="fx-change ${cls}">${arrow} ${sign}${d.change30d.toFixed(2)}% <span style="opacity:0.55">30d</span></div>
+      `;
+    });
+  }
+
+  function toggleFx() {
+    if (converterMode) exitConverter();
+    fxMode = !fxMode;
+    document.getElementById('btnFx').classList.toggle('active', fxMode);
+    document.getElementById('clockGrid').classList.toggle('fx-mode', fxMode);
+    if (fxMode) fetchFxRates();
+  }
+
   // ── Button listeners ──
+  document.getElementById('btnFx').addEventListener('click', toggleFx);
   document.getElementById('btnConverter').addEventListener('click', toggleConverter);
   document.getElementById('bannerClose').addEventListener('click', exitConverter);
 
